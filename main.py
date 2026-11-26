@@ -1,70 +1,85 @@
-"""Emit the project's lone entry file.
+"""Roast payload: wireless earbuds that save their single low-battery
+warning for the worst possible moment -- the middle of a live call.
 
-Subject here is the wireless earbuds and their single spoken alert: it fires
-halfway through a sentence on a live call, which means the device's only
-message to its owner is that it is about to die at the least convenient
-instant it could pick.
+Stores the one-liner in /output/entry.txt for the grader to read.
 """
 
 import os
-import sys
 import tempfile
 
 JOKE = "My earbuds wait until I'm mid-sentence on a call to whisper 'battery low' — their one warning, timed perfectly to be useless."
 
-# Inclusive bounds for one entry.
-FLOOR_CHARS = 1
-CEIL_CHARS = 200
-LANDING_DIR = "/output"
-LANDING_NAME = "entry.txt"
+MIN_CHARS = 1
+MAX_CHARS = 200
+OUTPUT_DIR = "/output"
+OUTPUT_NAME = "entry.txt"
+FILE_MODE = 0o644
 
 
-def validate(text):
-    """Check a candidate entry and hand it back, or raise ValueError."""
-    if text is None or not text.strip():
-        raise ValueError("refusing to ship a blank entry")
-    count = len(text)
-    if count < FLOOR_CHARS or count > CEIL_CHARS:
+def validate(value):
+    """Return value only when it is a non-blank string of 1..200 characters.
+
+    Anything else raises ValueError so a malformed roast never reaches disk.
+    """
+    if not isinstance(value, str):
+        raise ValueError("payload must be a string")
+    if not value.strip():
+        raise ValueError("payload must not be empty or whitespace-only")
+    length = len(value)
+    if not (MIN_CHARS <= length <= MAX_CHARS):
         raise ValueError(
-            "entry is %d characters; the window is %d..%d"
-            % (count, FLOOR_CHARS, CEIL_CHARS)
+            "payload length %d out of range %d..%d"
+            % (length, MIN_CHARS, MAX_CHARS)
         )
-    return text
+    return value
 
 
-def _stage(text):
-    """Spill text to a private temp file already set to 0644; return its path."""
-    fd, path = tempfile.mkstemp(dir=LANDING_DIR, prefix=".entry-", suffix=".swap")
-    os.fchmod(fd, 0o644)
-    with os.fdopen(fd, "wb") as sink:
-        sink.write(text.encode("utf-8"))
-        sink.flush()
-        os.fsync(sink.fileno())
+def _discard(path):
+    """Best-effort removal of a staging file we created."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _stage_on_disk(payload):
+    """Write payload to a fresh temp file inside /output and return its path.
+
+    /output already exists (main() creates it). Only the temp file itself is
+    chmod'ed here; the directory is left alone because the grader runs as a
+    uid that does not own it and a chmod on /output would raise.
+    """
+    fd, path = tempfile.mkstemp(dir=OUTPUT_DIR, prefix="roast.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+        os.chmod(path, FILE_MODE)
+    except BaseException:
+        _discard(path)
+        raise
     return path
 
 
-def _promote(staged, final):
-    """Rename the staged file into place and re-assert its permissions."""
-    os.replace(staged, final)
-    os.chmod(final, 0o644)
+def _promote(staging):
+    """Atomically rename staging to the final entry and fix its mode."""
+    dest = os.path.join(OUTPUT_DIR, OUTPUT_NAME)
+    try:
+        os.replace(staging, dest)
+    except BaseException:
+        _discard(staging)
+        raise
+    os.chmod(dest, FILE_MODE)
+    return dest
 
 
 def main():
-    entry = validate(JOKE)
-    os.makedirs(LANDING_DIR, mode=0o755, exist_ok=True)
-    os.chmod(LANDING_DIR, 0o755)
-    staged = _stage(entry)
-    try:
-        _promote(staged, os.path.join(LANDING_DIR, LANDING_NAME))
-    except BaseException:
-        try:
-            os.unlink(staged)
-        except FileNotFoundError:
-            pass
-        raise
-    print(len(entry))
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    payload = validate(JOKE)
+    staging = _stage_on_disk(payload)
+    dest = _promote(staging)
+    print("stored %d characters in %s" % (len(payload), dest))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
