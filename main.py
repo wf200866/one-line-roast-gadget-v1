@@ -1,48 +1,70 @@
-#!/usr/bin/env python3
-"""One-Line Roast: The Gadget You Use Every Day (wireless earbuds angle).
+"""Emit the project's lone entry file.
 
-Target: the lone "battery low" chime that always lands mid-call, i.e. a
-warning timed so precisely it arrives after it could ever have helped.
-Writes one funny line to /output/entry.txt. Standard library only.
+Subject here is the wireless earbuds and their single spoken alert: it fires
+halfway through a sentence on a live call, which means the device's only
+message to its owner is that it is about to die at the least convenient
+instant it could pick.
 """
+
 import os
+import sys
 import tempfile
 
-JOKE = (
-    "My earbuds wait until I'm mid-sentence on a call to whisper "
-    "'battery low' \u2014 their one warning, timed perfectly to be useless."
-)
+JOKE = "My earbuds wait until I'm mid-sentence on a call to whisper 'battery low' — their one warning, timed perfectly to be useless."
 
-ENTRY_PATH = "/output/entry.txt"
+# Inclusive bounds for one entry.
+FLOOR_CHARS = 1
+CEIL_CHARS = 200
+LANDING_DIR = "/output"
+LANDING_NAME = "entry.txt"
 
 
-def validate(text: str) -> str:
-    if not text.strip():
-        raise ValueError("entry is blank")
-    if not (1 <= len(text) <= 200):
-        raise ValueError("entry must be 1-200 characters, got %d" % len(text))
+def validate(text):
+    """Check a candidate entry and hand it back, or raise ValueError."""
+    if text is None or not text.strip():
+        raise ValueError("refusing to ship a blank entry")
+    count = len(text)
+    if count < FLOOR_CHARS or count > CEIL_CHARS:
+        raise ValueError(
+            "entry is %d characters; the window is %d..%d"
+            % (count, FLOOR_CHARS, CEIL_CHARS)
+        )
     return text
 
 
-def main() -> None:
-    line = validate(JOKE)
-    os.makedirs("/output", exist_ok=True)
-    # The collector reads /output as another user: keep the folder traversable.
-    os.chmod("/output", 0o755)
-    # Write to a temp file in /output, make it world-readable, then swap it in
-    # atomically so a reader never sees a partial entry.
-    fd, tmp = tempfile.mkstemp(dir="/output", prefix=".entry-", suffix=".tmp")
+def _stage(text):
+    """Spill text to a private temp file already set to 0644; return its path."""
+    fd, path = tempfile.mkstemp(dir=LANDING_DIR, prefix=".entry-", suffix=".swap")
+    os.fchmod(fd, 0o644)
+    with os.fdopen(fd, "wb") as sink:
+        sink.write(text.encode("utf-8"))
+        sink.flush()
+        os.fsync(sink.fileno())
+    return path
+
+
+def _promote(staged, final):
+    """Rename the staged file into place and re-assert its permissions."""
+    os.replace(staged, final)
+    os.chmod(final, 0o644)
+
+
+def main():
+    entry = validate(JOKE)
+    os.makedirs(LANDING_DIR, mode=0o755, exist_ok=True)
+    os.chmod(LANDING_DIR, 0o755)
+    staged = _stage(entry)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(line)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, ENTRY_PATH)
+        _promote(staged, os.path.join(LANDING_DIR, LANDING_NAME))
     except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
         raise
-    os.chmod(ENTRY_PATH, 0o644)
+    print(len(entry))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
